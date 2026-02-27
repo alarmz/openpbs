@@ -111,12 +111,22 @@ jobs:
             rpmbuild -ba ~/rpmbuild/SPECS/*.spec
           fi
 
-      - name: Collect RPM artifacts
+      - name: Collect and rename RPM artifacts
         run: |
           mkdir -p ${GITHUB_WORKSPACE}/artifacts
-          cp ~/rpmbuild/RPMS/x86_64/*pbs*.rpm ${GITHUB_WORKSPACE}/artifacts/ 2>/dev/null || true
-          cp ~/rpmbuild/RPMS/noarch/*pbs*.rpm ${GITHUB_WORKSPACE}/artifacts/ 2>/dev/null || true
-          cp ~/rpmbuild/SRPMS/*pbs*.rpm ${GITHUB_WORKSPACE}/artifacts/ 2>/dev/null || true
+          # Rename RPMs to include el tag (spec doesn't use %{?dist})
+          for rpm in ~/rpmbuild/RPMS/x86_64/*pbs*.rpm; do
+            newname=$(basename "${rpm}" .x86_64.rpm).${{ matrix.el_tag }}.x86_64.rpm
+            cp "${rpm}" "${GITHUB_WORKSPACE}/artifacts/${newname}"
+          done
+          for rpm in ~/rpmbuild/RPMS/noarch/*pbs*.rpm; do
+            newname=$(basename "${rpm}" .noarch.rpm).${{ matrix.el_tag }}.noarch.rpm
+            cp "${rpm}" "${GITHUB_WORKSPACE}/artifacts/${newname}"
+          done 2>/dev/null || true
+          for rpm in ~/rpmbuild/SRPMS/*pbs*.rpm; do
+            newname=$(basename "${rpm}" .src.rpm).${{ matrix.el_tag }}.src.rpm
+            cp "${rpm}" "${GITHUB_WORKSPACE}/artifacts/${newname}"
+          done
           echo "Built RPMs:"
           ls -lh ${GITHUB_WORKSPACE}/artifacts/
 
