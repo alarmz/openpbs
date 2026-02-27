@@ -39,19 +39,33 @@ jobs:
 
       - name: Install build dependencies
         run: |
-          dnf -y install \
-            gcc gcc-c++ make rpm-build autoconf automake libtool \
-            libtool-ltdl-devel hwloc-devel libX11-devel libXt-devel \
-            libedit-devel libical-devel ncurses-devel perl \
-            postgresql-devel postgresql-contrib python3-devel \
-            tcl-devel tk-devel swig zlib-devel expat-devel \
-            openssl-devel libXext libXft cjson-devel \
-            python3-pip sudo which git rpmdevtools
+          if [ "${{ matrix.rocky_version }}" == "8" ]; then
+            dnf -y install gcc-toolset-12
+            dnf -y module enable python39
+            dnf -y install \
+              make rpm-build autoconf automake libtool \
+              libtool-ltdl-devel hwloc-devel libX11-devel libXt-devel \
+              libedit-devel libical-devel ncurses-devel perl \
+              postgresql-devel postgresql-contrib python39-devel \
+              tcl-devel tk-devel swig zlib-devel expat-devel \
+              openssl-devel libXext libXft cjson-devel \
+              python39-pip sudo which git rpmdevtools byacc pcre-devel
+            alternatives --set python3 /usr/bin/python3.9
+          else
+            dnf -y install \
+              gcc gcc-c++ make rpm-build autoconf automake libtool \
+              libtool-ltdl-devel hwloc-devel libX11-devel libXt-devel \
+              libedit-devel libical-devel ncurses-devel perl \
+              postgresql-devel postgresql-contrib python3-devel \
+              tcl-devel tk-devel swig zlib-devel expat-devel \
+              openssl-devel libXext libXft cjson-devel \
+              python3-pip sudo which git rpmdevtools
+          fi
 
       - name: Build and install swig 4.0 (Rocky 8 only)
         if: matrix.rocky_version == '8'
         run: |
-          dnf -y install byacc pcre-devel
+          source /opt/rh/gcc-toolset-12/enable
           cd /tmp
           git clone https://github.com/swig/swig --branch rel-4.0.0 --single-branch
           cd swig
@@ -66,6 +80,9 @@ jobs:
 
       - name: Build source tarball
         run: |
+          if [ "${{ matrix.rocky_version }}" == "8" ]; then
+            source /opt/rh/gcc-toolset-12/enable
+          fi
           cd ${GITHUB_WORKSPACE}
           ./autogen.sh
           mkdir -p build
@@ -85,13 +102,13 @@ jobs:
             cp ../*-rpmlintrc ~/rpmbuild/SOURCES/
           fi
           cp *.spec ~/rpmbuild/SPECS/
-          cflags="-g -O2 -Wall -Werror"
           if [ "${{ matrix.rocky_version }}" == "8" ]; then
-            CFLAGS="${cflags}" CXXFLAGS="${cflags}" \
-              rpmbuild -ba *.spec -D "_with_swig --with-swig=/usr/local"
+            # Inject gcc-toolset-12 and CFLAGS into spec %build section
+            sed -i '/^..\/configure/i source /opt/rh/gcc-toolset-12/enable\nexport CFLAGS="-g -O2 -Wall"\nexport CXXFLAGS="-g -O2 -Wall"' ~/rpmbuild/SPECS/*.spec
+            rpmbuild -ba --nodeps ~/rpmbuild/SPECS/*.spec \
+              -D "_with_swig --with-swig=/usr/local"
           else
-            CFLAGS="${cflags}" CXXFLAGS="${cflags}" \
-              rpmbuild -ba *.spec
+            rpmbuild -ba ~/rpmbuild/SPECS/*.spec
           fi
 
       - name: Collect RPM artifacts
@@ -113,7 +130,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          dnf -y install jq
           for rpm in ${GITHUB_WORKSPACE}/artifacts/*.rpm; do
             echo "Uploading $(basename ${rpm})..."
             curl -s -H "Authorization: token ${GH_TOKEN}" \
