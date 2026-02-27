@@ -1,0 +1,123 @@
+name: Build RPM Packages
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-rpm:
+    name: Build RPMs on Rocky Linux ${{ matrix.rocky_version }}
+    runs-on: ubuntu-latest
+    container:
+      image: rockylinux/rockylinux:${{ matrix.rocky_version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        rocky_version: ["8", "9"]
+        include:
+          - rocky_version: "8"
+            el_tag: el8
+            repo_cmd: |
+              dnf -y install 'dnf-command(config-manager)'
+              dnf config-manager --set-enabled powertools
+              dnf -y install epel-release
+          - rocky_version: "9"
+            el_tag: el9
+            repo_cmd: |
+              dnf -y install 'dnf-command(config-manager)'
+              dnf config-manager --set-enabled crb
+              dnf -y install epel-release
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Enable additional repos
+        run: |
+          dnf -y clean all
+          ${{ matrix.repo_cmd }}
+
+      - name: Install build dependencies
+        run: |
+          dnf -y install \
+            gcc gcc-c++ make rpm-build autoconf automake libtool \
+            libtool-ltdl-devel hwloc-devel libX11-devel libXt-devel \
+            libedit-devel libical-devel ncurses-devel perl \
+            postgresql-devel postgresql-contrib python3-devel \
+            tcl-devel tk-devel swig zlib-devel expat-devel \
+            openssl-devel libXext libXft cjson-devel \
+            python3-pip sudo which git rpmdevtools
+
+      - name: Build and install swig 4.0 (Rocky 8 only)
+        if: matrix.rocky_version == '8'
+        run: |
+          dnf -y install byacc pcre-devel
+          cd /tmp
+          git clone https://github.com/swig/swig --branch rel-4.0.0 --single-branch
+          cd swig
+          ./autogen.sh
+          ./configure
+          make -j$(nproc)
+          make install
+
+      - name: Setup rpmbuild tree
+        run: |
+          mkdir -p ~/rpmbuild/{BUILD,RPMS,SOURCES,SPECS,SRPMS}
+
+      - name: Build source tarball
+        run: |
+          cd ${GITHUB_WORKSPACE}
+          ./autogen.sh
+          mkdir -p build
+          cd build
+          if [ "${{ matrix.rocky_version }}" == "8" ]; then
+            ../configure --prefix=/opt/pbs --with-swig=/usr/local
+          else
+            ../configure --prefix=/opt/pbs
+          fi
+          make dist
+
+      - name: Prepare and build RPM
+        run: |
+          cd ${GITHUB_WORKSPACE}/build
+          cp *.tar.gz ~/rpmbuild/SOURCES/
+          if ls ../*-rpmlintrc 1>/dev/null 2>&1; then
+            cp ../*-rpmlintrc ~/rpmbuild/SOURCES/
+          fi
+          cp *.spec ~/rpmbuild/SPECS/
+          cflags="-g -O2 -Wall -Werror"
+          if [ "${{ matrix.rocky_version }}" == "8" ]; then
+            CFLAGS="${cflags}" CXXFLAGS="${cflags}" \
+              rpmbuild -ba *.spec -D "_with_swig --with-swig=/usr/local"
+          else
+            CFLAGS="${cflags}" CXXFLAGS="${cflags}" \
+              rpmbuild -ba *.spec
+          fi
+
+      - name: Collect RPM artifacts
+        run: |
+          mkdir -p ${GITHUB_WORKSPACE}/artifacts
+          cp ~/rpmbuild/RPMS/x86_64/*pbs*.rpm ${GITHUB_WORKSPACE}/artifacts/ 2>/dev/null || true
+          cp ~/rpmbuild/RPMS/noarch/*pbs*.rpm ${GITHUB_WORKSPACE}/artifacts/ 2>/dev/null || true
+          cp ~/rpmbuild/SRPMS/*pbs*.rpm ${GITHUB_WORKSPACE}/artifacts/ 2>/dev/null || true
+          echo "Built RPMs:"
+          ls -lh ${GITHUB_WORKSPACE}/artifacts/
+
+      - name: Upload RPM artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: openpbs-rpms-${{ matrix.el_tag }}
+          path: artifacts/*.rpm
+
+      - name: Upload RPMs to GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          dnf -y install jq
+          for rpm in ${GITHUB_WORKSPACE}/artifacts/*.rpm; do
+            echo "Uploading $(basename ${rpm})..."
+            curl -s -H "Authorization: token ${GH_TOKEN}" \
+              -H "Content-Type: application/x-rpm" \
+              --data-binary @"${rpm}" \
+              "https://uploads.github.com/repos/${{ github.repository }}/releases/${{ github.event.release.id }}/assets?name=$(basename ${rpm})"
+          done
